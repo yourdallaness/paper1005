@@ -649,8 +649,13 @@ void main()
   var shadow_b = 20.0;
 
 
-  var cm_side = 512;
-  var dp_side = 886;
+  // Increase these and refresh the page to allocate larger shadow-map render targets.
+  // The current defaults keep DP total texel count close to the cubemap path:
+  // 2 * 886^2 ~= 6 * 512^2.
+  var cubemapShadowMapSize = 512;
+  var dualParaboloidShadowMapSize = 886;
+  var cm_side = cubemapShadowMapSize;
+  var dp_side = dualParaboloidShadowMapSize;
 
   var dp_fbo, dp_rbo;
   var cm_fbo, cm_rbo;
