@@ -512,6 +512,10 @@ void main()
 
 
 <script id="dp_shader_vs" type="x-shader/x-vertex">
+#include <common>
+#include <morphtarget_pars_vertex>
+#include <skinning_pars_vertex>
+
 uniform mat4 mvp;
 uniform float zFar;
 out vec3 bc;
@@ -521,7 +525,12 @@ void main()
   // vec4 hp = projectionMatrix * viewMatrix * mix( modelMatrix0*position0, modelMatrix1*position1, weight );
   // vec4 v0 = mix( modelMatrix0*position0, modelMatrix1*position1, weight );
 
-  vec4 v0 = modelMatrix * vec4( position, 1.0 );
+  #include <skinbase_vertex>
+  #include <begin_vertex>
+  #include <morphtarget_vertex>
+  #include <skinning_vertex>
+
+  vec4 v0 = modelMatrix * vec4( transformed, 1.0 );
   v0 = v0/v0.w;
 
   vec4 hp = mvp * v0;
@@ -554,12 +563,21 @@ void main()
 
 
 <script id="cm_shader_vs" type="x-shader/x-vertex">
+#include <common>
+#include <morphtarget_pars_vertex>
+#include <skinning_pars_vertex>
+
 uniform mat4 mvp;
 uniform float zFar;
 out vec3 bc;
 void main()
 {
-  vec4 v0 = modelMatrix * vec4( position, 1.0 );
+  #include <skinbase_vertex>
+  #include <begin_vertex>
+  #include <morphtarget_vertex>
+  #include <skinning_vertex>
+
+  vec4 v0 = modelMatrix * vec4( transformed, 1.0 );
   v0 = v0/v0.w;
   gl_Position = mvp * v0;
   bc = v0.xyz;
@@ -613,8 +631,8 @@ void main()
 
   var settings;
 
-  var cm_camera, cm_face_mat, cm_screen_mat, cm_rt, cm_texid;
-  var cameraRTT, materialRTT, materialScreen, texdp_rt_id, texdp_id;
+  var cm_camera, cm_face_mat, cm_skinned_face_mat, cm_morph_face_mat, cm_skinned_morph_face_mat, cm_screen_mat, cm_rt, cm_texid;
+  var cameraRTT, materialRTT, skinnedMaterialRTT, morphMaterialRTT, skinnedMorphMaterialRTT, materialScreen, texdp_rt_id, texdp_id;
 
 
   var cameraScreen, cameraScreen_controls;
@@ -658,6 +676,76 @@ void main()
     renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
+  function createCaptureMaterial(vertexShaderId, fragmentShaderId, useSkinning, useMorphTargets)
+  {
+    return new THREE.ShaderMaterial({
+      uniforms: {
+        mvp: { value: new THREE.Matrix4() },
+        zFar: { value: zFar },
+        l: { value: new THREE.Vector3(0, 0, 0) }
+      },
+      vertexShader: document.getElementById(vertexShaderId).textContent,
+      fragmentShader: document.getElementById(fragmentShaderId).textContent,
+      skinning: useSkinning,
+      morphTargets: useMorphTargets,
+    });
+  }
+
+  function captureMaterialForObject(object, plainMaterial, skinnedMaterial, morphMaterial, skinnedMorphMaterial)
+  {
+    var usesSkinning = object.isSkinnedMesh === true;
+    var usesMorphTargets = object.morphTargetInfluences !== undefined && object.morphTargetInfluences.length > 0;
+
+    if (usesSkinning && usesMorphTargets)
+      return skinnedMorphMaterial;
+    if (usesSkinning)
+      return skinnedMaterial;
+    if (usesMorphTargets)
+      return morphMaterial;
+
+    return plainMaterial;
+  }
+
+  function applyCaptureMaterials(plainMaterial, skinnedMaterial, morphMaterial, skinnedMorphMaterial)
+  {
+    var overrides = [];
+
+    sceneScreen.traverse(function (object) {
+      if (object.material === undefined)
+        return;
+
+      overrides.push({ object: object, material: object.material });
+      object.material = captureMaterialForObject(object, plainMaterial, skinnedMaterial, morphMaterial, skinnedMorphMaterial);
+    });
+
+    return overrides;
+  }
+
+  function restoreCaptureMaterials(overrides)
+  {
+    for (var i = 0; i < overrides.length; i++)
+      overrides[i].object.material = overrides[i].material;
+  }
+
+  function setCaptureMaterialsLight(captureMaterials, l)
+  {
+    for (var i = 0; i < captureMaterials.length; i++)
+    {
+      captureMaterials[i].uniforms["zFar"].value = zFar;
+      captureMaterials[i].uniforms["l"].value.set(l.x, l.y, l.z);
+    }
+  }
+
+  function setCaptureMaterialsMvp(captureMaterials, mvp)
+  {
+    for (var i = 0; i < captureMaterials.length; i++)
+      captureMaterials[i].uniforms["mvp"].value.set(
+        mvp[0], mvp[4], mvp[8], mvp[12],
+        mvp[1], mvp[5], mvp[9], mvp[13],
+        mvp[2], mvp[6], mvp[10], mvp[14],
+        mvp[3], mvp[7], mvp[11], mvp[15]);
+  }
+
 
   var mixer, clock;
 
@@ -679,15 +767,10 @@ void main()
     container.appendChild(stats.dom);
 
     cm_camera = new THREE.OrthographicCamera(-100, 100, -100, 100, -100, 100);
-    cm_face_mat = new THREE.ShaderMaterial({
-      uniforms: {
-        mvp: { value: new THREE.Matrix4() },
-        zFar: { value: zFar },
-        l: { value: new THREE.Vector3(0, 0, 0) }
-      },
-      vertexShader: document.getElementById('cm_shader_vs').textContent,
-      fragmentShader: document.getElementById('cm_shader_fs').textContent,
-    });
+    cm_face_mat = createCaptureMaterial('cm_shader_vs', 'cm_shader_fs', false, false);
+    cm_skinned_face_mat = createCaptureMaterial('cm_shader_vs', 'cm_shader_fs', true, false);
+    cm_morph_face_mat = createCaptureMaterial('cm_shader_vs', 'cm_shader_fs', false, true);
+    cm_skinned_morph_face_mat = createCaptureMaterial('cm_shader_vs', 'cm_shader_fs', true, true);
     cm_rt = new Array(M+1);
     cm_texid = new Array(M+1);
     var i, s;
@@ -700,16 +783,10 @@ void main()
     }
 
     cameraRTT = new THREE.OrthographicCamera(-100, 100, -100, 100, -100, 100);
-    materialRTT = new THREE.ShaderMaterial({
-      uniforms: {
-        mvp: { value: new THREE.Matrix4() },
-        zFar: { value: zFar },
-        l: { value: new THREE.Vector3(0, 0, 0) }
-      },
-      vertexShader: document.getElementById('dp_shader_vs').textContent,
-      fragmentShader: document.getElementById('dp_shader_fs').textContent,
-      //side: THREE.DoubleSide,
-    });
+    materialRTT = createCaptureMaterial('dp_shader_vs', 'dp_shader_fs', false, false);
+    skinnedMaterialRTT = createCaptureMaterial('dp_shader_vs', 'dp_shader_fs', true, false);
+    morphMaterialRTT = createCaptureMaterial('dp_shader_vs', 'dp_shader_fs', false, true);
+    skinnedMorphMaterialRTT = createCaptureMaterial('dp_shader_vs', 'dp_shader_fs', true, true);
 
     cameraScreen = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 1000);
     cameraScreen.position.set(.3, 3, 3);
@@ -1367,8 +1444,8 @@ gl.drawArrays(gl.TRIANGLES, 0, my_quad.n);
     ];
 
     var mvp;
-    cm_face_mat.uniforms["zFar"].value = zFar;
-    cm_face_mat.uniforms["l"].value.set(l.x, l.y, l.z);
+    var captureMaterials = [cm_face_mat, cm_skinned_face_mat, cm_morph_face_mat, cm_skinned_morph_face_mat];
+    setCaptureMaterialsLight(captureMaterials, l);
 
     var prev_color = renderer.getClearColor();
     var prev_apaha = renderer.getClearAlpha();
@@ -1378,24 +1455,26 @@ gl.drawArrays(gl.TRIANGLES, 0, my_quad.n);
     prev_fog = sceneScreen.fog;
     sceneScreen.background = null;
     sceneScreen.fog = null;
-    sceneScreen.overrideMaterial = cm_face_mat;
+    var captureOverrides = applyCaptureMaterials(cm_face_mat, cm_skinned_face_mat, cm_morph_face_mat, cm_skinned_morph_face_mat);
 
     // cm_rt[0].texture.generateMipmaps = false;
-    for( i=0; i<6; i++ )
+    try
     {
-      var pj = m4.perspective( Math.PI/2, 1, .001, 200 );
-      var mv = m4.lookAt([l.x, l.y, l.z], [eye[i].x + l.x, eye[i].y + l.y, eye[i].z + l.z], [up[i].x, up[i].y, up[i].z]);
-      var mvp = m4.multiply(pj,mv);
-      cm_face_mat.uniforms["mvp"].value.set(
-        mvp[0], mvp[4], mvp[8], mvp[12],
-        mvp[1], mvp[5], mvp[9], mvp[13],
-        mvp[2], mvp[6], mvp[10], mvp[14],
-        mvp[3], mvp[7], mvp[11], mvp[15]);
-      renderer.setRenderTarget(cm_rt[0],i);
-      renderer.clear();
-      renderer.render(sceneScreen, cm_camera);
+      for( i=0; i<6; i++ )
+      {
+        var pj = m4.perspective( Math.PI/2, 1, .001, 200 );
+        var mv = m4.lookAt([l.x, l.y, l.z], [eye[i].x + l.x, eye[i].y + l.y, eye[i].z + l.z], [up[i].x, up[i].y, up[i].z]);
+        var mvp = m4.multiply(pj,mv);
+        setCaptureMaterialsMvp(captureMaterials, mvp);
+        renderer.setRenderTarget(cm_rt[0],i);
+        renderer.clear();
+        renderer.render(sceneScreen, cm_camera);
+      }
     }
-    sceneScreen.overrideMaterial = null;
+    finally
+    {
+      restoreCaptureMaterials(captureOverrides);
+    }
     sceneScreen.background = prev_background;
     sceneScreen.fog = prev_fog;
     renderer.setClearColor(prev_color, prev_apaha);
@@ -1409,8 +1488,8 @@ gl.drawArrays(gl.TRIANGLES, 0, my_quad.n);
     var eye = [new vec3(0.0, 0.0, -1.0), new vec3(0.0, 0.0, 1.0)];
     var up = [(new vec3(0.0, 1.0, 0.0)).neg(), (new vec3(0.0, 1.0, 0.0)).neg()];
     var mvp;
-    materialRTT.uniforms["zFar"].value = zFar;
-    materialRTT.uniforms["l"].value.set(l.x, l.y, l.z);
+    var captureMaterials = [materialRTT, skinnedMaterialRTT, morphMaterialRTT, skinnedMorphMaterialRTT];
+    setCaptureMaterialsLight(captureMaterials, l);
 
     var prev_color = renderer.getClearColor();
     var prev_apaha = renderer.getClearAlpha();
@@ -1420,21 +1499,23 @@ gl.drawArrays(gl.TRIANGLES, 0, my_quad.n);
     prev_fog = sceneScreen.fog;
     sceneScreen.background = null;
     sceneScreen.fog = null;
-    sceneScreen.overrideMaterial = materialRTT;
-    for( i=0; i<2; i++ )
+    var captureOverrides = applyCaptureMaterials(materialRTT, skinnedMaterialRTT, morphMaterialRTT, skinnedMorphMaterialRTT);
+    try
     {
-      mvp = m4.lookAt([l.x, l.y, l.z], [eye[i].x + l.x, eye[i].y + l.y, eye[i].z + l.z], [up[i].x, up[i].y, up[i].z]);
-      materialRTT.uniforms["mvp"].value.set(
-        mvp[0], mvp[4], mvp[8], mvp[12],
-        mvp[1], mvp[5], mvp[9], mvp[13],
-        mvp[2], mvp[6], mvp[10], mvp[14],
-        mvp[3], mvp[7], mvp[11], mvp[15]);
+      for( i=0; i<2; i++ )
+      {
+        mvp = m4.lookAt([l.x, l.y, l.z], [eye[i].x + l.x, eye[i].y + l.y, eye[i].z + l.z], [up[i].x, up[i].y, up[i].z]);
+        setCaptureMaterialsMvp(captureMaterials, mvp);
 
-      renderer.setRenderTarget(texdp_rt_id[i]);
-      renderer.clear();
-      renderer.render(sceneScreen, cameraRTT);
+        renderer.setRenderTarget(texdp_rt_id[i]);
+        renderer.clear();
+        renderer.render(sceneScreen, cameraRTT);
+      }
     }
-    sceneScreen.overrideMaterial = null;
+    finally
+    {
+      restoreCaptureMaterials(captureOverrides);
+    }
     sceneScreen.background = prev_background;
     sceneScreen.fog = prev_fog;
     renderer.setClearColor(prev_color, prev_apaha);
